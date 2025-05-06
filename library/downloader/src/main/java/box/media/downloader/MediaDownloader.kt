@@ -4,7 +4,6 @@ package box.media.downloader
 
 import android.content.Context
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
 import androidx.media3.database.DatabaseProvider
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.HttpDataSource
@@ -22,7 +21,7 @@ import box.media.downloader.internal.Cookies
 import box.media.downloader.internal.DispatchQueueThread
 import box.media.downloader.internal.DownloadInfoQueue
 import box.media.downloader.internal.StopReason
-import box.media.downloader.internal.transformM3u8ToMp4
+import box.media.downloader.internal.transformToMp4
 import box.media.downloader.util.Log
 import box.media.downloader.util.UrlUtil
 import box.media.downloader.util.md5
@@ -113,9 +112,22 @@ object MediaDownloader : CoroutineScope {
         Log.e(msg = "downloadDir: $downloadDir")
     }
 
+    fun observeTasks(scope: CoroutineScope, onUpdate: (List<DownloadInfo>) -> Unit) {
+        scope.launch {
+            getDownloadTasks()
+        }
+        downloadQueue.observeUpdate(scope) {
+            onUpdate(downloadQueue.asList())
+        }
+    }
+
     suspend fun getDownloadTasks(): List<DownloadInfo> = withContext(coroutineContext) {
         try {
-            requireDownloadManager().downloadIndex.getDownloads().use { cursor ->
+            requireDownloadManager().downloadIndex.getDownloads(
+                Download.STATE_QUEUED, Download.STATE_STOPPED,
+                Download.STATE_DOWNLOADING, Download.STATE_FAILED,
+                Download.STATE_RESTARTING,
+            ).use { cursor ->
                 Log.e(msg = "getDownloads: ${cursor.count}")
 
                 while (cursor.moveToNext()) {
@@ -210,6 +222,29 @@ object MediaDownloader : CoroutineScope {
         }
     }
 
+    /** 删除下载 */
+    fun remove(id: String) = launch {
+        val manager = requireDownloadManager()
+        when (config.mode) {
+            DownloadConfig.MODE_DEFAULT -> {
+                manager.removeDownload(id)
+            }
+            DownloadConfig.MODE_BACKGROUND_SERVICE -> {
+                DownloadService.sendRemoveDownload(
+                    applicationContext, MediaDownloadService::class.java,
+                    id, false,
+                )
+            }
+            DownloadConfig.MODE_FOREGROUND_SERVICE -> {
+                DownloadService.sendRemoveDownload(
+                    applicationContext, MediaDownloadService::class.java,
+                    id, true,
+                )
+            }
+            else -> error("invalid mode: ${config.mode}")
+        }
+    }
+
     internal fun requireDownloadManager(): DownloadManager {
         downloadManager?.let { return it }
 
@@ -297,28 +332,22 @@ object MediaDownloader : CoroutineScope {
                 val info = queue[request.uri.toString()] ?: return@launch
                 when (download.state) {
                     Download.STATE_COMPLETED -> {
-                        when (request.mimeType) {
-                            // 合并 m3u8
-                            MimeTypes.APPLICATION_M3U8 -> {
-                                info.state = DownloadState.Transforming
-                                val mediaItem = request.toMediaItem()
-                                val filename = UrlUtil.getFileName(request.uri.toString(), true)
-                                val outPath = downloadDir.resolve("$filename.mp4").absolutePath
-                                val result = mediaItem.transformM3u8ToMp4(applicationContext, downloadCache, outPath)
-                                when (result.optimizationResult) {
-                                    ExportResult.OPTIMIZATION_NONE,
-                                    ExportResult.OPTIMIZATION_SUCCEEDED -> {
-                                        info.state = DownloadState.Completed
-                                        Log.i(msg = "transform m3u8 to mp4 succeed: $filename")
-                                    }
-                                    else -> {
-                                        info.state = DownloadState.Failed
-                                        Log.e(msg = "transform m3u8 to mp4 failed: ${result.optimizationResult}, $filename")
-                                    }
-                                }
+                        info.state = DownloadState.Transforming
+                        val mediaItem = request.toMediaItem()
+                        val filename = UrlUtil.getFileName(request.uri.toString(), true)
+                        val outPath = downloadDir.resolve("$filename.mp4").absolutePath
+                        val result = mediaItem.transformToMp4(applicationContext, downloadCache, outPath)
+                        when (result.optimizationResult) {
+                            ExportResult.OPTIMIZATION_NONE,
+                            ExportResult.OPTIMIZATION_SUCCEEDED -> {
+                                info.filePath = outPath
+                                info.state = DownloadState.Completed
+                                downloadQueue.remove(info.url)
+                                Log.i(msg = "transform to mp4 succeed: $filename")
                             }
                             else -> {
-                                info.state = DownloadState.Completed
+                                info.state = DownloadState.Failed
+                                Log.e(msg = "transform to mp4 failed: ${result.optimizationResult}, $filename")
                             }
                         }
                         Log.e(msg = "onDownloadComplete: ${request.mimeType}, ${info.url}")

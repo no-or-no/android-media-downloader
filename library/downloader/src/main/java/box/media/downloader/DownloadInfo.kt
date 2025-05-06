@@ -49,6 +49,7 @@ class DownloadInfo @PublishedApi internal constructor(
     receivedBytes: Long,
 ) {
     val id: String = url.md5()
+    var filePath: String? = null; internal set
 
     internal var download: Download? = null
         set(value) {

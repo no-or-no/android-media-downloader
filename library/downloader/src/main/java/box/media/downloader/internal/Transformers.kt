@@ -22,7 +22,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 
 @OptIn(UnstableApi::class)
-internal suspend fun MediaItem.transformM3u8ToMp4(context: Context, cache: Cache, outPath: String): ExportResult
+internal suspend fun MediaItem.transformToMp4(context: Context, cache: Cache, outPath: String): ExportResult
 = withContext(MediaDownloader.coroutineContext) {
     val mediaSourceFactory = DefaultMediaSourceFactory(context)
         .setDataSourceFactory(
@@ -52,6 +52,6 @@ internal suspend fun MediaItem.transformM3u8ToMp4(context: Context, cache: Cache
                 }
             })
             .build()
-        transformer.start(this@transformM3u8ToMp4, outPath)
+        transformer.start(this@transformToMp4, outPath)
     }
 }
